@@ -7,66 +7,63 @@ import numpy as np
 
 import torch
 from torch import nn
+from types import SimpleNamespace
+from functools import partial
 from torch import autograd
 
-from blocks import LinearBlock, Conv2dBlock, ResBlocks, ActFirstResBlock
-
-
-def assign_adain_params(adain_params, model):
-    # assign the adain_params to the AdaIN layers in model
-    for m in model.modules():
-        if m.__class__.__name__ == "AdaptiveInstanceNorm2d":
-            mean = adain_params[:, :m.num_features]
-            std = adain_params[:, m.num_features:2*m.num_features]
-            m.bias = mean.contiguous().view(-1)
-            m.weight = std.contiguous().view(-1)
-            if adain_params.size(1) > 2*m.num_features:
-                adain_params = adain_params[:, 2*m.num_features:]
-
-
-def get_num_adain_params(model):
-    # return the number of AdaIN parameters needed by the model
-    num_adain_params = 0
-    for m in model.modules():
-        if m.__class__.__name__ == "AdaptiveInstanceNorm2d":
-            num_adain_params += 2*m.num_features
-    return num_adain_params
-
+from funit_from_imaginaire import *
 
 class GPPatchMcResDis(nn.Module):
     def __init__(self, hp):
         super(GPPatchMcResDis, self).__init__()
         assert hp['n_res_blks'] % 2 == 0, 'n_res_blk must be multiples of 2'
         self.n_layers = hp['n_res_blks'] // 2
-        nf = hp['nf']
-        cnn_f = [Conv2dBlock(3, nf, 7, 1, 3,
-                             pad_type='reflect',
-                             norm='none',
-                             activation='none')]
-        for i in range(self.n_layers - 1):
-            nf_out = np.min([nf * 2, 1024])
-            cnn_f += [ActFirstResBlock(nf, nf, None, 'lrelu', 'none')]
-            cnn_f += [ActFirstResBlock(nf, nf_out, None, 'lrelu', 'none')]
-            cnn_f += [nn.ReflectionPad2d(1)]
-            cnn_f += [nn.AvgPool2d(kernel_size=3, stride=2)]
-            nf = np.min([nf * 2, 1024])
-        nf_out = np.min([nf * 2, 1024])
-        cnn_f += [ActFirstResBlock(nf, nf, None, 'lrelu', 'none')]
-        cnn_f += [ActFirstResBlock(nf, nf_out, None, 'lrelu', 'none')]
-        cnn_c = [Conv2dBlock(nf_out, hp['num_classes'], 1, 1,
-                             norm='none',
-                             activation='lrelu',
-                             activation_first=True)]
-        self.cnn_f = nn.Sequential(*cnn_f)
-        self.cnn_c = nn.Sequential(*cnn_c)
+        padding_mode = 'reflect'
+        weight_norm_type = 'spectral'
+        image_channels = 4
+        num_filters = hp['nf']
+        num_layers = self.n_layers
+        max_num_filters = 1024
+        conv_params = dict(padding_mode=padding_mode,
+                           activation_norm_type='none',
+                           weight_norm_type=weight_norm_type,
+                           bias=[True, True, True],
+                           nonlinearity='leakyrelu',
+                           order='NACNAC')
+
+        first_kernel_size = 7
+        first_padding = (first_kernel_size - 1) // 2
+        model = [Conv2dBlock(image_channels, num_filters,
+                             first_kernel_size, 1, first_padding,
+                             padding_mode=padding_mode,
+                             weight_norm_type=weight_norm_type)]
+        for i in range(num_layers):
+            num_filters_prev = num_filters
+            num_filters = min(num_filters * 2, max_num_filters)
+            model += [Res2dBlock(num_filters_prev, num_filters_prev,
+                                 **conv_params),
+                      Res2dBlock(num_filters_prev, num_filters,
+                                 **conv_params)]
+            if i != num_layers - 1:
+                model += [nn.ReflectionPad2d(1),
+                          nn.AvgPool2d(3, stride=2)]
+        self.model = nn.Sequential(*model)
+        self.classifier = Conv2dBlock(num_filters, 1, 1, 1, 0,
+                                      nonlinearity='leakyrelu',
+                                      weight_norm_type=weight_norm_type,
+                                      order='NACNAC')
+
+        self.embedder = nn.Embedding(hp['num_classes'], num_filters)
 
     def forward(self, x, y):
         assert(x.size(0) == y.size(0))
-        feat = self.cnn_f(x)
-        out = self.cnn_c(feat)
-        index = torch.LongTensor(range(out.size(0))).cuda()
-        out = out[index, y, :, :]
-        return out, feat
+        features = self.cnn_f(x)
+        outputs = self.cnn_c(features)
+        features_1x1 = features.mean(3).mean(2)
+        embeddings = self.embedder(y)
+        outputs += torch.sum(embeddings * features_1x1, dim=1,
+                             keepdim=True).view(x.size(0), 1, 1, 1)
+        return outputs, features
 
     def calc_dis_fake_loss(self, input_fake, input_label):
         resp_fake, gan_feat = self.forward(input_fake, input_label)
@@ -107,7 +104,6 @@ class GPPatchMcResDis(nn.Module):
         reg = grad_dout2.sum()/batch_size
         return reg
 
-
 class FewShotGen(nn.Module):
     def __init__(self, hp):
         super(FewShotGen, self).__init__()
@@ -118,36 +114,58 @@ class FewShotGen(nn.Module):
         n_mlp_blks = hp['n_mlp_blks']
         n_res_blks = hp['n_res_blks']
         latent_dim = hp['latent_dim']
-        self.enc_class_model = ClassModelEncoder(down_class,
-                                                 3,
-                                                 nf,
-                                                 latent_dim,
-                                                 norm='none',
-                                                 activ='relu',
-                                                 pad_type='reflect')
 
-        self.enc_content = ContentEncoder(down_content,
-                                          n_res_blks,
-                                          3,
-                                          nf,
-                                          'in',
-                                          activ='relu',
-                                          pad_type='reflect')
+        self.enc_class_model = StyleEncoder(num_downsamples = down_class,
+                                            image_channels = 4,
+                                            num_filters = nf,
+                                            style_channels = latent_dim,
+                                            padding_mode = 'reflect',
+                                            activation_norm_type = 'none',
+                                            weight_norm_type = '',
+                                            nonlinearity = 'relu')
 
-        self.dec = Decoder(down_content,
-                           n_res_blks,
-                           self.enc_content.output_dim,
-                           3,
-                           res_norm='adain',
-                           activ='relu',
-                           pad_type='reflect')
+        self.enc_content = ContentEncoder(num_downsamples = down_content,
+                                              num_res_blocks = n_res_blks,
+                                              image_channels = 4,
+                                              num_filters = nf,
+                                              padding_mode = 'reflect',
+                                              activation_norm_type = 'instance',
+                                              weight_norm_type = '',
+                                              nonlinearity = 'relu')
+
+        self.dec = Decoder(self.enc_content.output_dim,
+                               nf_mlp,
+                               4,
+                               down_content,
+                               'reflect',
+                               '',
+                               'relu')
+
+        usb_dims = 1024
+        self.usb = torch.nn.Parameter(torch.randn(1, usb_dims))
 
         self.mlp = MLP(latent_dim,
-                       get_num_adain_params(self.dec),
+                       nf_mlp,
                        nf_mlp,
                        n_mlp_blks,
                        norm='none',
                        activ='relu')
+
+        num_content_mlp_blocks = 2
+        num_style_mlp_blocks = 2
+        self.mlp_content = MLP(self.enc_content.output_dim,
+                               latent_dim,
+                               nf_mlp,
+                               num_content_mlp_blocks,
+                               'none',
+                               'relu')
+
+        self.mlp_style = MLP(latent_dim + usb_dims,
+                             latent_dim,
+                             nf_mlp,
+                             num_style_mlp_blocks,
+                             'none',
+                             'relu')
 
     def forward(self, one_image, model_set):
         # reconstruct an image
@@ -164,102 +182,134 @@ class FewShotGen(nn.Module):
         class_code = torch.mean(class_codes, dim=0).unsqueeze(0)
         return content, class_code
 
-    def decode(self, content, model_code):
-        # decode content and style codes to an image
-        adain_params = self.mlp(model_code)
-        assign_adain_params(adain_params, self.dec)
-        images = self.dec(content)
+    def decode(self, content, style):
+        content_style_code = content.mean(3).mean(2)
+        content_style_code = self.mlp_content(content_style_code)
+        batch_size = style.size(0)
+        usb = self.usb.repeat(batch_size, 1)
+        style = style.view(batch_size, -1)
+        style_in = self.mlp_style(torch.cat([style, usb], 1))
+        coco_style = style_in * content_style_code
+        coco_style = self.mlp(coco_style)
+        images = self.decoder(content, coco_style)
         return images
 
-
-class ClassModelEncoder(nn.Module):
-    def __init__(self, downs, ind_im, dim, latent_dim, norm, activ, pad_type):
-        super(ClassModelEncoder, self).__init__()
-        self.model = []
-        self.model += [Conv2dBlock(ind_im, dim, 7, 1, 3,
-                                   norm=norm,
-                                   activation=activ,
-                                   pad_type=pad_type)]
-        for i in range(2):
-            self.model += [Conv2dBlock(dim, 2 * dim, 4, 2, 1,
-                                       norm=norm,
-                                       activation=activ,
-                                       pad_type=pad_type)]
-            dim *= 2
-        for i in range(downs - 2):
-            self.model += [Conv2dBlock(dim, dim, 4, 2, 1,
-                                       norm=norm,
-                                       activation=activ,
-                                       pad_type=pad_type)]
-        self.model += [nn.AdaptiveAvgPool2d(1)]
-        self.model += [nn.Conv2d(dim, latent_dim, 1, 1, 0)]
-        self.model = nn.Sequential(*self.model)
-        self.output_dim = dim
-
-    def forward(self, x):
-        return self.model(x)
-
-
-class ContentEncoder(nn.Module):
-    def __init__(self, downs, n_res, input_dim, dim, norm, activ, pad_type):
-        super(ContentEncoder, self).__init__()
-        self.model = []
-        self.model += [Conv2dBlock(input_dim, dim, 7, 1, 3,
-                                   norm=norm,
-                                   activation=activ,
-                                   pad_type=pad_type)]
-        for i in range(downs):
-            self.model += [Conv2dBlock(dim, 2 * dim, 4, 2, 1,
-                                       norm=norm,
-                                       activation=activ,
-                                       pad_type=pad_type)]
-            dim *= 2
-        self.model += [ResBlocks(n_res, dim,
-                                 norm=norm,
-                                 activation=activ,
-                                 pad_type=pad_type)]
-        self.model = nn.Sequential(*self.model)
-        self.output_dim = dim
-
-    def forward(self, x):
-        return self.model(x)
-
-
 class Decoder(nn.Module):
-    def __init__(self, ups, n_res, dim, out_dim, res_norm, activ, pad_type):
+    r"""Improved FUNIT decoder.
+
+    Args:
+        num_enc_output_channels (int): Number of content feature channels.
+        style_channels (int): Dimension of the style code.
+        num_image_channels (int): Number of image channels.
+        num_upsamples (int): How many times we are going to apply
+            upsample residual block.
+    """
+
+    def __init__(self,
+                 num_enc_output_channels,
+                 style_channels,
+                 num_image_channels=3,
+                 num_upsamples=4,
+                 padding_type='reflect',
+                 weight_norm_type='none',
+                 nonlinearity='relu'):
         super(Decoder, self).__init__()
+        adain_params = SimpleNamespace(
+            activation_norm_type='instance',
+            activation_norm_params=SimpleNamespace(affine=False),
+            cond_dims=style_channels)
 
-        self.model = []
-        self.model += [ResBlocks(n_res, dim, res_norm,
-                                 activ, pad_type=pad_type)]
-        for i in range(ups):
-            self.model += [nn.Upsample(scale_factor=2),
-                           Conv2dBlock(dim, dim // 2, 5, 1, 2,
-                                       norm='in',
-                                       activation=activ,
-                                       pad_type=pad_type)]
-            dim //= 2
-        self.model += [Conv2dBlock(dim, out_dim, 7, 1, 3,
-                                   norm='none',
-                                   activation='tanh',
-                                   pad_type=pad_type)]
-        self.model = nn.Sequential(*self.model)
+        base_res_block = partial(Res2dBlock,
+                                 kernel_size=3,
+                                 padding=1,
+                                 padding_mode=padding_type,
+                                 nonlinearity=nonlinearity,
+                                 activation_norm_type='adaptive',
+                                 activation_norm_params=adain_params,
+                                 weight_norm_type=weight_norm_type)
 
-    def forward(self, x):
-        return self.model(x)
+        base_up_res_block = partial(UpRes2dBlock,
+                                    kernel_size=5,
+                                    padding=2,
+                                    padding_mode=padding_type,
+                                    weight_norm_type=weight_norm_type,
+                                    activation_norm_type='adaptive',
+                                    activation_norm_params=adain_params,
+                                    skip_activation_norm='instance',
+                                    skip_nonlinearity=nonlinearity,
+                                    nonlinearity=nonlinearity,
+                                    hidden_channels_equal_out_channels=True)
 
+        dims = num_enc_output_channels
+
+        # Residual blocks with AdaIN.
+        self.decoder = nn.ModuleList()
+        self.decoder += [base_res_block(dims, dims)]
+        self.decoder += [base_res_block(dims, dims)]
+        for _ in range(num_upsamples):
+            self.decoder += [base_up_res_block(dims, dims // 2)]
+            dims = dims // 2
+        self.decoder += [Conv2dBlock(dims,
+                                     num_image_channels,
+                                     kernel_size=7,
+                                     stride=1,
+                                     padding=3,
+                                     padding_mode='reflect',
+                                     nonlinearity='tanh')]
+
+    def forward(self, x, style):
+        r"""
+
+        Args:
+            x (tensor): Content embedding of the content image.
+            style (tensor): Style embedding of the style image.
+        """
+        for block in self.decoder:
+            if getattr(block, 'conditional', False):
+                x = block(x, style)
+            else:
+                x = block(x)
+        return x
 
 class MLP(nn.Module):
-    def __init__(self, in_dim, out_dim, dim, n_blk, norm, activ):
+    r"""Improved FUNIT style decoder.
 
-        super(MLP, self).__init__()
-        self.model = []
-        self.model += [LinearBlock(in_dim, dim, norm=norm, activation=activ)]
-        for i in range(n_blk - 2):
-            self.model += [LinearBlock(dim, dim, norm=norm, activation=activ)]
-        self.model += [LinearBlock(dim, out_dim,
-                                   norm='none', activation='none')]
-        self.model = nn.Sequential(*self.model)
+    Args:
+        input_dim (int): Input dimension (style code dimension).
+        output_dim (int): Output dimension (to be fed into the AdaIN
+           layer).
+        latent_dim (int): Latent dimension.
+        num_layers (int): Number of layers in the MLP.
+        activation_norm_type (str): Activation type.
+        nonlinearity (str): Nonlinearity type.
+    """
+
+    def __init__(self,
+                 input_dim,
+                 output_dim,
+                 latent_dim,
+                 num_layers,
+                 activation_norm_type,
+                 nonlinearity):
+        super().__init__()
+        model = []
+        model += [LinearBlock(input_dim, latent_dim,
+                              activation_norm_type=activation_norm_type,
+                              nonlinearity=nonlinearity)]
+        # changed from num_layers - 2 to num_layers - 3.
+        for i in range(num_layers - 3):
+            model += [LinearBlock(latent_dim, latent_dim,
+                                  activation_norm_type=activation_norm_type,
+                                  nonlinearity=nonlinearity)]
+        model += [LinearBlock(latent_dim, output_dim,
+                              activation_norm_type=activation_norm_type,
+                              nonlinearity=nonlinearity)]
+        self.model = nn.Sequential(*model)
 
     def forward(self, x):
+        r"""
+
+        Args:
+            x (tensor): Input tensor.
+        """
         return self.model(x.view(x.size(0), -1))
