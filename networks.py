@@ -65,8 +65,6 @@ class GPPatchMcResDis(nn.Module):
         embeddings = self.embedder(labels)
         outputs += torch.sum(embeddings * features_1x1, dim=1,
                              keepdim=True).view(images.size(0), 1, 1, 1)
-        print(f'dis outputs: {outputs.shape}')
-        print(f'dis features: {features_1x1.shape}')
         return outputs, features_1x1
 
     def calc_dis_fake_loss(self, input_fake, input_label):
