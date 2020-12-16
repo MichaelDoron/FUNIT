@@ -11,9 +11,10 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
 import torchvision.utils as vutils
+from torch import Tensor
 
 from data import ImageLabelFilelist
-
+import torchvision.transforms.functional as F
 
 def update_average(model_tgt, model_src, beta=0.999):
     with torch.no_grad():
@@ -23,6 +24,14 @@ def update_average(model_tgt, model_src, beta=0.999):
             assert(p_src is not p_tgt)
             p_tgt.copy_(beta*p_tgt + (1. - beta)*p_src)
 
+class tiff_normalize(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self, tensor: Tensor) -> Tensor:
+        means = tensor.mean(axis=(1,2))
+        stds = tensor.std(axis=(1,2))
+        tensor.sub_(means.view(-1,1,1)).div_(stds.view(-1,1,1))
+        return tensor
 
 def loader_from_list(
         root,
@@ -38,7 +47,7 @@ def loader_from_list(
         return_paths=False,
         drop_last=True):
     transform_list = [transforms.ToTensor(),
-                      transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
+                      tiff_normalize()]
     if center_crop:
         transform_list = [transforms.CenterCrop((height, width))] + \
                          transform_list if crop else transform_list
@@ -163,7 +172,7 @@ def make_result_folders(output_directory):
 
 
 def __write_images(im_outs, dis_img_n, file_name):
-    im_outs = [images.expand(-1, 3, -1, -1) for images in im_outs]
+    im_outs = [images.expand(-1, 4, -1, -1) for images in im_outs]
     image_tensor = torch.cat([images[:dis_img_n] for images in im_outs], 0)
     image_grid = vutils.make_grid(image_tensor.data,
                                   nrow=dis_img_n, padding=0, normalize=True)
@@ -173,7 +182,8 @@ def __write_images(im_outs, dis_img_n, file_name):
 def write_1images(image_outputs, image_directory, postfix):
     display_image_num = image_outputs[0].size(0)
     __write_images(image_outputs, display_image_num,
-                   '%s/gen_%s.jpg' % (image_directory, postfix))
+                   # '%s/gen_%s.jpg' % (image_directory, postfix))
+                   '%s/gen_%s.tiff' % (image_directory, postfix))
 
 
 def _write_row(html_file, it, fn, all_size):

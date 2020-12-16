@@ -5,12 +5,15 @@ Licensed under the CC BY-NC-SA 4.0 license
 """
 import os.path
 from PIL import Image
+import tifffile
 
 import torch.utils.data as data
 
 
 def default_loader(path):
-    return Image.open(path).convert('RGB')
+    img = tifffile.imread(path)
+    return Image.fromarray(img.transpose(1,2,0))
+    # return Image.open(path).convert('RGB')
 
 
 def default_filelist_reader(filelist):
