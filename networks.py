@@ -65,6 +65,8 @@ class GPPatchMcResDis(nn.Module):
         embeddings = self.embedder(labels)
         outputs += torch.sum(embeddings * features_1x1, dim=1,
                              keepdim=True).view(images.size(0), 1, 1, 1)
+        print(f'dis outputs: {outputs.shape}')
+        print(f'dis features: {features_1x1.shape}')
         return outputs, features_1x1
 
     def calc_dis_fake_loss(self, input_fake, input_label):
@@ -210,7 +212,7 @@ class Decoder(nn.Module):
     def __init__(self,
                  num_enc_output_channels,
                  style_channels,
-                 num_image_channels=3,
+                 num_image_channels=4,
                  num_upsamples=4,
                  padding_type='reflect',
                  weight_norm_type='none',

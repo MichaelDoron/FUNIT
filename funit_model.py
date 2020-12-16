@@ -37,10 +37,10 @@ class FUNITModel(nn.Module):
             l_adv_r, gacc_r, xr_gan_feat = self.dis.calc_gen_loss(xr, la)
             _, xb_gan_feat = self.dis(xb, lb)
             _, xa_gan_feat = self.dis(xa, la)
-            l_c_rec = recon_criterion(xr_gan_feat.mean(3).mean(2),
-                                      xa_gan_feat.mean(3).mean(2))
-            l_m_rec = recon_criterion(xt_gan_feat.mean(3).mean(2),
-                                      xb_gan_feat.mean(3).mean(2))
+            l_c_rec = recon_criterion(xr_gan_feat,
+                                      xa_gan_feat)
+            l_m_rec = recon_criterion(xt_gan_feat,
+                                      xb_gan_feat)
             l_x_rec = recon_criterion(xr, xa)
             l_adv = 0.5 * (l_adv_t + l_adv_r)
             acc = 0.5 * (gacc_t + gacc_r)
