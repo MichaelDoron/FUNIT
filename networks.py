@@ -55,15 +55,17 @@ class GPPatchMcResDis(nn.Module):
 
         self.embedder = nn.Embedding(hp['num_classes'], num_filters)
 
-    def forward(self, x, y):
-        assert(x.size(0) == y.size(0))
-        features = self.cnn_f(x)
-        outputs = self.cnn_c(features)
+    def forward(self, images, labels):
+        assert (images.size(0) == labels.size(0))
+        features = self.model(images)
+        outputs = self.classifier(features)
         features_1x1 = features.mean(3).mean(2)
-        embeddings = self.embedder(y)
+        if labels is None:
+            return features_1x1
+        embeddings = self.embedder(labels)
         outputs += torch.sum(embeddings * features_1x1, dim=1,
-                             keepdim=True).view(x.size(0), 1, 1, 1)
-        return outputs, features
+                             keepdim=True).view(images.size(0), 1, 1, 1)
+        return outputs, features_1x1
 
     def calc_dis_fake_loss(self, input_fake, input_label):
         resp_fake, gan_feat = self.forward(input_fake, input_label)
@@ -148,8 +150,8 @@ class FewShotGen(nn.Module):
                        nf_mlp,
                        nf_mlp,
                        n_mlp_blks,
-                       norm='none',
-                       activ='relu')
+                       'none',
+                       'relu')
 
         num_content_mlp_blocks = 2
         num_style_mlp_blocks = 2
