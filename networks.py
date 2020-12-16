@@ -193,7 +193,7 @@ class FewShotGen(nn.Module):
         style_in = self.mlp_style(torch.cat([style, usb], 1))
         coco_style = style_in * content_style_code
         coco_style = self.mlp(coco_style)
-        images = self.decoder(content, coco_style)
+        images = self.dec(content, coco_style)
         return images
 
 class Decoder(nn.Module):
