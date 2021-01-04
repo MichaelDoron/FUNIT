@@ -10,12 +10,6 @@ import tifffile
 import torch.utils.data as data
 
 
-def default_loader(path):
-    img = tifffile.imread(path)
-    return Image.fromarray(img.transpose(1,2,0))
-    # return Image.open(path).convert('RGB')
-
-
 def default_filelist_reader(filelist):
     im_list = []
     with open(filelist, 'r') as rf:
@@ -24,11 +18,20 @@ def default_filelist_reader(filelist):
             im_list.append(im_path)
     return im_list
 
+def tiff_loader(path):
+    img = tifffile.imread(path)
+    return Image.fromarray(img.transpose(1,2,0))
+    # return Image.open(path).convert('RGB')
+
+def default_loader(path):
+    return Image.open(path).convert('RGB')
+
 
 class ImageLabelFilelist(data.Dataset):
     def __init__(self,
                  root,
                  filelist,
+                 filetype,
                  transform=None,
                  filelist_reader=default_filelist_reader,
                  loader=default_loader,

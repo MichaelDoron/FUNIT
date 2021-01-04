@@ -13,7 +13,7 @@ from torchvision import transforms
 import torchvision.utils as vutils
 from torch import Tensor
 
-from data import ImageLabelFilelist
+from data import ImageLabelFilelist, default_loader, tiff_loader
 import torchvision.transforms.functional as F
 
 def update_average(model_tgt, model_src, beta=0.999):
@@ -36,6 +36,7 @@ class tiff_normalize(torch.nn.Module):
 def loader_from_list(
         root,
         file_list,
+        file_type,
         batch_size,
         new_size=None,
         height=128,
@@ -46,8 +47,14 @@ def loader_from_list(
         center_crop=False,
         return_paths=False,
         drop_last=True):
-    transform_list = [transforms.ToTensor(),
-                      tiff_normalize()]
+    if file_type == 'tiff':
+        transform_list = [transforms.ToTensor(),
+                        tiff_normalize()]
+    elif file_type == 'png':
+        transform_list = [transforms.ToTensor(),
+                        # tiff_normalize()]
+                        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
+
     if center_crop:
         transform_list = [transforms.CenterCrop((height, width))] + \
                          transform_list if crop else transform_list
@@ -59,9 +66,16 @@ def loader_from_list(
     if not center_crop:
         transform_list = [transforms.RandomHorizontalFlip()] + transform_list
     transform = transforms.Compose(transform_list)
+    if file_type == 'png':
+        image_loader = default_loader
+    else:
+        image_loader = tiff_loader
+
     dataset = ImageLabelFilelist(root,
                                  file_list,
+                                 file_type,
                                  transform,
+                                 loader = image_loader,
                                  return_paths=return_paths)
     loader = DataLoader(dataset,
                         batch_size,
@@ -80,6 +94,7 @@ def get_evaluation_loaders(conf, shuffle_content=False):
     content_loader = loader_from_list(
             root=conf['data_folder_train'],
             file_list=conf['data_list_train'],
+            file_type=conf['file_type'],
             batch_size=batch_size,
             new_size=new_size,
             height=height,
@@ -94,6 +109,7 @@ def get_evaluation_loaders(conf, shuffle_content=False):
     class_loader = loader_from_list(
             root=conf['data_folder_test'],
             file_list=conf['data_list_test'],
+            file_type=conf['file_type'],
             batch_size=batch_size * conf['k_shot'],
             new_size=new_size,
             height=height,
@@ -116,6 +132,7 @@ def get_train_loaders(conf):
     train_content_loader = loader_from_list(
             root=conf['data_folder_train'],
             file_list=conf['data_list_train'],
+            file_type=conf['file_type'],
             batch_size=batch_size,
             new_size=new_size,
             height=height,
@@ -125,6 +142,7 @@ def get_train_loaders(conf):
     train_class_loader = loader_from_list(
             root=conf['data_folder_train'],
             file_list=conf['data_list_train'],
+            file_type=conf['file_type'],
             batch_size=batch_size,
             new_size=new_size,
             height=height,
@@ -134,6 +152,7 @@ def get_train_loaders(conf):
     test_content_loader = loader_from_list(
             root=conf['data_folder_test'],
             file_list=conf['data_list_test'],
+            file_type=conf['file_type'],
             batch_size=batch_size,
             new_size=new_size,
             height=height,
@@ -143,6 +162,7 @@ def get_train_loaders(conf):
     test_class_loader = loader_from_list(
             root=conf['data_folder_test'],
             file_list=conf['data_list_test'],
+            file_type=conf['file_type'],
             batch_size=batch_size,
             new_size=new_size,
             height=height,
@@ -171,19 +191,19 @@ def make_result_folders(output_directory):
     return checkpoint_directory, image_directory
 
 
-def __write_images(im_outs, dis_img_n, file_name):
-    im_outs = [images.expand(-1, 4, -1, -1) for images in im_outs]
+def __write_images(im_outs, dis_img_n, file_name, num_image_channels):
+    im_outs = [images.expand(-1, num_image_channels, -1, -1) for images in im_outs]
     image_tensor = torch.cat([images[:dis_img_n] for images in im_outs], 0)
     image_grid = vutils.make_grid(image_tensor.data,
                                   nrow=dis_img_n, padding=0, normalize=True)
     vutils.save_image(image_grid, file_name, nrow=1)
 
 
-def write_1images(image_outputs, image_directory, postfix):
+def write_1images(image_outputs, image_directory, postfix, filetype, num_image_channels):
     display_image_num = image_outputs[0].size(0)
     __write_images(image_outputs, display_image_num,
                    # '%s/gen_%s.jpg' % (image_directory, postfix))
-                   '%s/gen_%s.tiff' % (image_directory, postfix))
+                   '%s/gen_%s.%s' % (image_directory, postfix, filetype), num_image_channels)
 
 
 def _write_row(html_file, it, fn, all_size):
@@ -239,3 +259,4 @@ class Timer:
 
     def __exit__(self, exc_type, exc_value, exc_tb):
         print(self.msg % (time.time() - self.start_time))
+

@@ -20,7 +20,7 @@ class GPPatchMcResDis(nn.Module):
         self.n_layers = hp['n_res_blks'] // 2
         padding_mode = 'reflect'
         weight_norm_type = 'spectral'
-        image_channels = 4
+        image_channels = hp['num_image_channels']
         num_filters = hp['nf']
         num_layers = self.n_layers
         max_num_filters = 1024
@@ -118,7 +118,7 @@ class FewShotGen(nn.Module):
         latent_dim = hp['latent_dim']
 
         self.enc_class_model = StyleEncoder(num_downsamples = down_class,
-                                            image_channels = 4,
+                                            image_channels = hp['num_image_channels'],
                                             num_filters = nf,
                                             style_channels = latent_dim,
                                             padding_mode = 'reflect',
@@ -128,7 +128,7 @@ class FewShotGen(nn.Module):
 
         self.enc_content = ContentEncoder(num_downsamples = down_content,
                                               num_res_blocks = n_res_blks,
-                                              image_channels = 4,
+                                              image_channels = hp['num_image_channels'],
                                               num_filters = nf,
                                               padding_mode = 'reflect',
                                               activation_norm_type = 'instance',
@@ -137,7 +137,7 @@ class FewShotGen(nn.Module):
 
         self.dec = Decoder(self.enc_content.output_dim,
                                nf_mlp,
-                               4,
+                               hp['num_image_channels'],
                                down_content,
                                'reflect',
                                '',

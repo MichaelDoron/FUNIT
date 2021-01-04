@@ -6,12 +6,13 @@ Licensed under the CC BY-NC-SA 4.0 license
 import os
 import numpy as np
 from PIL import Image
+import tifffile
 
 import torch
 import torch.backends.cudnn as cudnn
 from torchvision import transforms
 
-from utils import get_config
+from utils import get_config, tiff_normalize
 from trainer import Trainer
 
 import argparse
@@ -44,9 +45,13 @@ trainer = Trainer(config)
 trainer.cuda()
 trainer.load_ckpt(opts.ckpt)
 trainer.eval()
+if config['file_type'] == 'tiff':
+    transform_list = [transforms.ToTensor(),
+                    tiff_normalize()]
+elif config['file_type'] == 'png':
+    transform_list = [transforms.ToTensor(),
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
 
-transform_list = [transforms.ToTensor(),
-                  transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
 transform_list = [transforms.Resize((128, 128))] + transform_list
 transform = transforms.Compose(transform_list)
 
@@ -54,7 +59,11 @@ print('Compute average class codes for images in %s' % opts.class_image_folder)
 images = os.listdir(opts.class_image_folder)
 for i, f in enumerate(images):
     fn = os.path.join(opts.class_image_folder, f)
-    img = Image.open(fn).convert('RGB')
+    if config['file_type'] == 'tiff':
+        img = tifffile.imread(fn)
+        img = Image.fromarray(img.transpose(1,2,0))
+    elif config['file_type'] == 'png':
+        img = Image.open(fn).convert('RGB')
     img_tensor = transform(img).unsqueeze(0).cuda()
     with torch.no_grad():
         class_code = trainer.model.compute_k_style(img_tensor, 1)
@@ -63,8 +72,11 @@ for i, f in enumerate(images):
         else:
             new_class_code += class_code
 final_class_code = new_class_code / len(images)
-image = Image.open(opts.input)
-image = image.convert('RGB')
+if config['file_type'] == 'tiff':
+    image = tifffile.imread(opts.input)
+    image = Image.fromarray(image.transpose(1,2,0))
+elif config['file_type'] == 'png':
+    image = Image.open(opts.input).convert('RGB')
 content_img = transform(image).unsqueeze(0)
 
 print('Compute translation for %s' % opts.input)
@@ -74,5 +86,9 @@ with torch.no_grad():
     image = np.transpose(image, (1, 2, 0))
     image = ((image + 1) * 0.5 * 255.0)
     output_img = Image.fromarray(np.uint8(image))
-    output_img.save(opts.output, 'JPEG', quality=99)
+    print(output_img)
+    if config['file_type'] == 'tiff':
+        output_img.save(opts.output, 'tiff')
+    elif config['file_type'] == 'png':
+        output_img.save(opts.output, 'png')
     print('Save output to %s' % opts.output)

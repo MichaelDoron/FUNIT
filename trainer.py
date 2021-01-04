@@ -166,3 +166,4 @@ def weights_init(init_type='gaussian'):
             if hasattr(m, 'bias') and m.bias is not None:
                 init.constant_(m.bias.data, 0.0)
     return init_fun
+

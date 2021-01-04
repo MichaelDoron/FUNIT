@@ -106,7 +106,8 @@ while True:
                     val_image_outputs = trainer.test(val_co_data, val_cl_data,
                                                      opts.multigpus)
                     write_1images(val_image_outputs, image_directory,
-                                  'train_%s_%02d' % (key_str, t))
+                                  'train_%s_%02d' % (key_str, t),
+                                  config['file_type'], config['num_image_channels'])
                 for t, (test_co_data, test_cl_data) in enumerate(
                             zip(test_content_loader, test_class_loader)):
                     if t >= opts.test_batch_size:
@@ -115,7 +116,8 @@ while True:
                                                       test_cl_data,
                                                       opts.multigpus)
                     write_1images(test_image_outputs, image_directory,
-                                  'test_%s_%02d' % (key_str, t))
+                                  'test_%s_%02d' % (key_str, t),
+                                  config['file_type'], config['num_image_channels'])
 
         if (iterations + 1) % config['snapshot_save_iter'] == 0:
             trainer.save(checkpoint_directory, iterations, opts.multigpus)
@@ -125,3 +127,4 @@ while True:
         if iterations >= max_iter:
             print("Finish Training")
             sys.exit(0)
+
