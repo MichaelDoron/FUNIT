@@ -5,6 +5,7 @@ Licensed under the CC BY-NC-SA 4.0 license
 """
 import torch
 import os
+import numpy as np
 import sys
 import argparse
 import shutil
@@ -88,7 +89,11 @@ while True:
 
         if (iterations + 1) % config['log_iter'] == 0:
             print("Iteration: %08d/%08d" % (iterations + 1, max_iter))
-            write_loss(iterations, trainer, train_writer)
+            loss_log = write_loss(iterations, trainer, train_writer)
+            if (loss_log):
+                torch.save(co_data,'co_data.pth')
+                torch.save(cl_data,'cl_data.pth')
+                quit()
 
         if ((iterations + 1) % config['image_save_iter'] == 0 or (
                 iterations + 1) % config['image_display_iter'] == 0):

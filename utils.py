@@ -6,6 +6,7 @@ Licensed under the CC BY-NC-SA 4.0 license
 import os
 import yaml
 import time
+import numpy as np
 
 import torch
 from torch.utils.data import DataLoader
@@ -28,9 +29,14 @@ class tiff_normalize(torch.nn.Module):
     def __init__(self):
         super().__init__()
     def forward(self, tensor: Tensor) -> Tensor:
+        old_tensor = tensor.clone()
         means = tensor.mean(axis=(1,2))
         stds = tensor.std(axis=(1,2))
+        stds = torch.Tensor([s if s > 0 else 1 for s in stds])
         tensor.sub_(means.view(-1,1,1)).div_(stds.view(-1,1,1))
+        if np.isnan(tensor).sum() > 1:
+            print('nonnn')
+            torch.save(old_tensor, 'old_tensor.pth')
         return tensor
 
 def loader_from_list(
@@ -44,7 +50,7 @@ def loader_from_list(
         crop=True,
         num_workers=4,
         shuffle=True,
-        center_crop=False,
+        center_crop=True,
         return_paths=False,
         drop_last=True):
     if file_type == 'tiff':
@@ -246,7 +252,10 @@ def write_loss(iterations, trainer, train_writer):
                         or 'nwd' in attr
                         or 'accuracy' in attr))]
     for m in members:
-        train_writer.add_scalar(m, getattr(trainer, m), iterations + 1)
+        if (np.isnan(getattr(trainer, m).item())):
+            print('nan!!!')
+            return True
+    return False
 
 
 class Timer:
